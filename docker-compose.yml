@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  speaker_verification:
+    container_name: speaker_verification
+    image: image_speaker_verification
+    build: .
+    ports:
+      - "8002:5000"
+    env_file:
+      - .env

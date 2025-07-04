@@ -62,7 +62,7 @@ async def compare_voices(
         pitch_diff = abs(pitch1 - pitch2)
 
         # Logika sederhana
-        same_speaker = mfcc_distance < 0.03
+        same_speaker = mfcc_distance < 0.03 and pitch_diff < 50
 
         print(f"MFCC Distance: {mfcc_distance}, Pitch Difference: {pitch_diff}, Same Speaker: {same_speaker}")
 
