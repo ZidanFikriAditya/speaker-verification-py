@@ -9,7 +9,7 @@ COPY . .
 
 # Install ffmpeg dan dependensi sistem
 RUN apt-get update && \
-    apt-get install -y nano git ffmpeg libsndfile1 && \
+    apt-get install -y nano ffmpeg libsndfile1 && \
     rm -rf /var/lib/apt/lists/*
 
 # Install dependensi Python
