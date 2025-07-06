@@ -41,17 +41,44 @@ def verify_api_key(x_api_key: str = Header(...)):
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 def save_temp_file(upload_file: UploadFile):
-    temp = NamedTemporaryFile(delete=False, suffix=".webm")
-    temp.write(upload_file.file.read())
-    temp.close()
-    return temp.name
+    try:
+        temp = NamedTemporaryFile(delete=False, suffix=".webm")
+        content = upload_file.file.read()
+        temp.write(content)
+        temp.close()
+        
+        # Normalize the temp file path
+        temp_path = os.path.normpath(temp.name)
+        print(f"Temp file saved: {temp_path}")
+        
+        return temp_path
+    except Exception as e:
+        print(f"Error saving temp file: {e}")
+        raise
 
 def extract_audio(input_path):
-    audio = AudioSegment.from_file(input_path)
-    audio = audio.set_channels(1).set_frame_rate(22050)
-    output_path = input_path.replace(".webm", ".wav")
-    audio.export(output_path, format="wav")
-    return output_path
+    try:
+        # Normalize input path
+        input_path = os.path.normpath(input_path)
+        
+        audio = AudioSegment.from_file(input_path)
+        audio = audio.set_channels(1).set_frame_rate(22050)
+        
+        # Create output path with proper extension
+        output_path = input_path.replace(".webm", ".wav")
+        if not output_path.endswith(".wav"):
+            output_path = os.path.splitext(input_path)[0] + ".wav"
+        
+        # Normalize output path
+        output_path = os.path.normpath(output_path)
+        
+        audio.export(output_path, format="wav")
+        print(f"Audio extracted: {input_path} -> {output_path}")
+        
+        return output_path
+    except Exception as e:
+        print(f"Error extracting audio from {input_path}: {e}")
+        raise
 
 def extract_features(audio_path):
     y, sr = librosa.load(audio_path, sr=22050)
@@ -151,6 +178,18 @@ def calculate_speechbrain_similarity(audio_path1, audio_path2):
         return None, None
     
     try:
+        # Normalize file paths to handle Windows path issues
+        audio_path1 = os.path.normpath(audio_path1)
+        audio_path2 = os.path.normpath(audio_path2)
+        
+        # Verify files exist before processing
+        if not os.path.exists(audio_path1):
+            print(f"Audio file 1 not found: {audio_path1}")
+            return None, None
+        if not os.path.exists(audio_path2):
+            print(f"Audio file 2 not found: {audio_path2}")
+            return None, None
+            
         print(f"Processing audio files: {audio_path1}, {audio_path2}")
         
         # Method 1: Try using verify_files if available (more direct)
@@ -191,7 +230,7 @@ def calculate_speechbrain_similarity(audio_path1, audio_path2):
         # Method 2: Load audio manually dan encode batch
         import torchaudio
         
-        # Load audio files menggunakan torchaudio
+        # Load audio files menggunakan torchaudio dengan normalized paths
         waveform1, sample_rate1 = torchaudio.load(audio_path1)
         waveform2, sample_rate2 = torchaudio.load(audio_path2)
         
