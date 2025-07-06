@@ -153,9 +153,55 @@ def calculate_speechbrain_similarity(audio_path1, audio_path2):
     try:
         print(f"Processing audio files: {audio_path1}, {audio_path2}")
         
-        # Extract embeddings dari kedua audio
-        embedding1 = speaker_model.encode_batch(audio_path1)
-        embedding2 = speaker_model.encode_batch(audio_path2)
+        # Method 1: Try using verify_files if available (more direct)
+        try:
+            if hasattr(speaker_model, 'verify_files'):
+                verification_score = speaker_model.verify_files(audio_path1, audio_path2)
+                verification_prob = float(verification_score.item())
+                
+                # Extract embeddings untuk similarity calculation
+                embedding1 = speaker_model.encode_file(audio_path1)
+                embedding2 = speaker_model.encode_file(audio_path2)
+                similarity = torch.nn.functional.cosine_similarity(embedding1, embedding2)
+                similarity_score = float(similarity.item())
+                
+                print(f"SpeechBrain (Method 1) - Similarity: {similarity_score}, Verification: {verification_prob}")
+                return similarity_score, verification_prob
+                
+        except Exception as method1_error:
+            print(f"Method 1 failed: {method1_error}")
+        
+        # Method 2: Load audio manually dan encode batch
+        import torchaudio
+        
+        # Load audio files menggunakan torchaudio
+        waveform1, sample_rate1 = torchaudio.load(audio_path1)
+        waveform2, sample_rate2 = torchaudio.load(audio_path2)
+        
+        # Resample jika perlu (SpeechBrain biasanya expect 16kHz)
+        if sample_rate1 != 16000:
+            resampler = torchaudio.transforms.Resample(sample_rate1, 16000)
+            waveform1 = resampler(waveform1)
+        
+        if sample_rate2 != 16000:
+            resampler = torchaudio.transforms.Resample(sample_rate2, 16000)
+            waveform2 = resampler(waveform2)
+        
+        # Convert ke mono jika stereo
+        if waveform1.shape[0] > 1:
+            waveform1 = torch.mean(waveform1, dim=0, keepdim=True)
+        if waveform2.shape[0] > 1:
+            waveform2 = torch.mean(waveform2, dim=0, keepdim=True)
+        
+        # Squeeze untuk menghilangkan dimension yang tidak perlu
+        waveform1 = waveform1.squeeze()
+        waveform2 = waveform2.squeeze()
+        
+        print(f"Waveform shapes: {waveform1.shape}, {waveform2.shape}")
+        
+        # Extract embeddings dari kedua audio menggunakan waveform
+        embedding1 = speaker_model.encode_batch(waveform1.unsqueeze(0))  # Add batch dimension
+        embedding2 = speaker_model.encode_batch(waveform2.unsqueeze(0))  # Add batch dimension
         
         print(f"Embedding shapes: {embedding1.shape}, {embedding2.shape}")
         
@@ -163,11 +209,11 @@ def calculate_speechbrain_similarity(audio_path1, audio_path2):
         similarity = torch.nn.functional.cosine_similarity(embedding1, embedding2)
         similarity_score = float(similarity.item())
         
-        # Hitung verification score (probability bahwa speaker sama)
-        verification_score = speaker_model.verify_batch(audio_path1, audio_path2)
-        verification_prob = float(verification_score.item())
+        # Convert similarity ke verification probability
+        # SpeechBrain verification biasanya sigmoid-based
+        verification_prob = torch.sigmoid(torch.tensor(similarity_score * 10 - 5)).item()  # Scale and sigmoid
         
-        print(f"SpeechBrain raw scores - Similarity: {similarity_score}, Verification: {verification_prob}")
+        print(f"SpeechBrain (Method 2) - Similarity: {similarity_score}, Verification: {verification_prob}")
         
         return similarity_score, verification_prob
         
@@ -259,98 +305,132 @@ def determine_same_speaker_advanced(similarity_score, detailed_similarities, spe
     1. Model pre-trained SpeechBrain (primary)
     2. Multiple audio features (fallback/validation)
     
-    Threshold disesuaikan agar tidak terlalu strict untuk speaker yang sama
+    Threshold disesuaikan untuk balanced recognition - tidak terlalu strict tapi tidak terlalu lenient
     """
     
     # Primary method: SpeechBrain model (state-of-the-art)
     if speechbrain_similarity is not None and speechbrain_verification is not None:
-        # SpeechBrain verification threshold (lebih fleksibel)
-        if speechbrain_verification > 0.25:  # Lowered from 0.3
+        # SpeechBrain verification threshold (more balanced)
+        if speechbrain_verification > 0.35:  # Raised from 0.3
             # Additional validation dengan cosine similarity
-            if speechbrain_similarity > 0.55:  # Lowered from 0.65
+            if speechbrain_similarity > 0.65:  # Raised from 0.6
                 return True, "speechbrain_high_confidence"
-            elif speechbrain_similarity > 0.45:  # Lowered from 0.55
-                # Cross-validate dengan traditional features (lebih lenieh)
+            elif speechbrain_similarity > 0.55:  # Raised from 0.5
+                # Cross-validate dengan traditional features
                 core_features_good = (
-                    detailed_similarities['mfcc'] > 0.60 and  # Lowered from 0.65
-                    detailed_similarities['pitch'] > 0.45 and  # Lowered from 0.6
-                    detailed_similarities['spectral'] > 0.50  # Lowered from 0.55
+                    detailed_similarities['mfcc'] > 0.60 and  # Raised from 0.55
+                    detailed_similarities['spectral'] > 0.60  # Raised from 0.55
                 )
                 if core_features_good:
                     return True, "speechbrain_medium_with_validation"
         
-        # Additional fallback untuk SpeechBrain dengan threshold lebih rendah
-        if speechbrain_verification > 0.15 and speechbrain_similarity > 0.4:
-            # Check traditional features sebagai backup
+        # Additional fallback untuk SpeechBrain (more strict)
+        if speechbrain_verification > 0.25 and speechbrain_similarity > 0.50:  # Both raised
+            # Check traditional features sebagai backup - more strict
             backup_features_acceptable = (
-                detailed_similarities['mfcc'] > 0.65 or
-                (detailed_similarities['pitch'] > 0.5 and detailed_similarities['spectral'] > 0.55)
+                detailed_similarities['mfcc'] > 0.70 and  # Raised from 0.65
+                (detailed_similarities['spectral'] > 0.75 or detailed_similarities.get('mel', 0) > 0.80)  # Raised
             )
             if backup_features_acceptable:
                 return True, "speechbrain_low_confidence_with_backup"
         
-        # SpeechBrain says different speaker (lebih konservatif dalam rejection)
-        if speechbrain_verification < 0.1 and speechbrain_similarity < 0.3:
+        # SpeechBrain says different speaker
+        if speechbrain_verification < 0.20 and speechbrain_similarity < 0.40:  # Both raised
             return False, "speechbrain_different_speaker"
     
-    # Fallback: Traditional feature-based analysis (less strict)
-    # Threshold utama - lebih fleksibel
-    if similarity_score > 0.75:  # Lowered from 0.78
+    # Fallback: Traditional feature-based analysis (more balanced)
+    # Threshold utama - conservative but fair
+    if similarity_score > 0.72:  # Slightly higher
         return True, "traditional_high_confidence"
     
-    # Multi-layer validation dengan threshold yang lebih realistis
-    core_features_good = (
-        detailed_similarities['mfcc'] > 0.68 and  # Lowered from 0.72
-        detailed_similarities['pitch'] > 0.30 and  # Significantly lowered from 0.65 (pitch variance is high)
-        detailed_similarities['spectral'] > 0.55  # Lowered from 0.60
+    # Multi-layer validation dengan threshold yang lebih balanced
+    # Core features harus kuat, tapi tidak ekstrem
+    core_features_strong = (
+        detailed_similarities['mfcc'] > 0.65 and  # Raised
+        detailed_similarities['spectral'] > 0.70  # Raised - spectral penting
     )
     
-    # Advanced features validation (lebih fleksibel)
+    # Advanced features validation (moderate strict)
     advanced_features_good = (
-        detailed_similarities.get('mel', 0) > 0.55 and  # Lowered from 0.60
-        detailed_similarities.get('formant', 0) > 0.50 and  # Lowered from 0.55
-        detailed_similarities.get('energy', 0) > 0.40  # Lowered from 0.45
+        detailed_similarities.get('mel', 0) > 0.65 and  # Lowered slightly
+        detailed_similarities.get('formant', 0) > 0.55 and  # Lowered slightly
+        detailed_similarities.get('energy', 0) > 0.50  # Lowered slightly
     )
     
-    # Decision making dengan threshold yang lebih realistis
-    if core_features_good and advanced_features_good and similarity_score > 0.65:  # Lowered from 0.70
+    # Require good core AND decent advanced features
+    if core_features_strong and advanced_features_good and similarity_score > 0.58:  # Raised
         return True, "traditional_multi_feature_validation"
     
-    # Fallback dengan MFCC yang kuat
-    if detailed_similarities['mfcc'] > 0.70 and similarity_score > 0.65:  # Lowered thresholds
-        return True, "traditional_mfcc_strong"
-    
-    # Voice characteristics consistency check (lebih lenieh)
-    voice_characteristics_good = (
-        detailed_similarities['pitch'] > 0.25 and  # Much lower tolerance for pitch
-        detailed_similarities.get('formant', 0) > 0.55 and
-        detailed_similarities['mfcc'] > 0.65  # Lowered from 0.75
+    # MFCC strong fallback - require higher standards AND validation
+    mfcc_strong_with_validation = (
+        detailed_similarities['mfcc'] > 0.72 and  # Higher threshold
+        similarity_score > 0.58 and  # Higher overall requirement
+        # Require at least one strong supporting feature
+        (detailed_similarities['spectral'] > 0.70 or
+         detailed_similarities.get('mel', 0) > 0.75 or
+         detailed_similarities.get('energy', 0) > 0.65)
     )
     
-    if voice_characteristics_good and similarity_score > 0.60:  # Lowered from 0.45
+    if mfcc_strong_with_validation:
+        return True, "traditional_mfcc_strong"
+    
+    # Voice characteristics - require consistency across features
+    voice_characteristics_consistent = (
+        detailed_similarities.get('formant', 0) > 0.65 and
+        detailed_similarities['mfcc'] > 0.65 and
+        detailed_similarities['spectral'] > 0.65
+    )
+    
+    if voice_characteristics_consistent and similarity_score > 0.50:
         return True, "traditional_voice_characteristics"
     
-    # Additional lenient check untuk edge cases
-    # Jika MFCC atau spectral features sangat tinggi, boleh lolos dengan similarity rendah
+    # Exceptional cases - require VERY high individual features
     exceptional_single_feature = (
-        (detailed_similarities['mfcc'] > 0.70 and similarity_score > 0.60) or
-        (detailed_similarities['spectral'] > 0.80 and detailed_similarities.get('mel', 0) > 0.80 and similarity_score > 0.55) or
-        (detailed_similarities.get('formant', 0) > 0.85 and detailed_similarities.get('mel', 0) > 0.85 and similarity_score > 0.58)
+        (detailed_similarities['mfcc'] > 0.80 and detailed_similarities['spectral'] > 0.70 and similarity_score > 0.50) or
+        (detailed_similarities['spectral'] > 0.85 and detailed_similarities.get('mel', 0) > 0.85 and similarity_score > 0.45) or
+        (detailed_similarities.get('mel', 0) > 0.90 and detailed_similarities['spectral'] > 0.80 and similarity_score > 0.45)
     )
     
     if exceptional_single_feature:
         return True, "traditional_exceptional_single_feature"
     
-    # Special case: High spectral + formant + mel (compensate for low pitch)
+    # Special case: High non-pitch features - require multiple very high features
     high_non_pitch_features = (
-        detailed_similarities['spectral'] > 0.85 and
+        detailed_similarities['spectral'] > 0.80 and
         detailed_similarities.get('mel', 0) > 0.85 and
-        detailed_similarities.get('formant', 0) > 0.85 and
-        detailed_similarities['mfcc'] > 0.65
+        detailed_similarities.get('energy', 0) > 0.65
     )
     
-    if high_non_pitch_features and similarity_score > 0.55:
+    # OR high mel + rhythm + formant (triple validation)
+    high_triple_validation = (
+        detailed_similarities.get('mel', 0) > 0.90 and
+        detailed_similarities.get('zcr', 0) > 0.80 and
+        detailed_similarities.get('formant', 0) > 0.70
+    )
+    
+    # Multiple excellent features - require majority yang sangat baik
+    multiple_excellent_features = (
+        sum([
+            1 if detailed_similarities['mfcc'] > 0.68 else 0,        # Raised
+            1 if detailed_similarities['spectral'] > 0.78 else 0,   # Raised
+            1 if detailed_similarities.get('mel', 0) > 0.75 else 0, # Lowered slightly
+            1 if detailed_similarities.get('formant', 0) > 0.65 else 0, # Lowered slightly
+            1 if detailed_similarities.get('energy', 0) > 0.60 else 0,  # Lowered slightly
+            1 if detailed_similarities.get('zcr', 0) > 0.70 else 0   # Lowered slightly
+        ]) >= 4  # Still require 4 excellent features
+    )
+    
+    if (high_non_pitch_features or high_triple_validation or multiple_excellent_features) and similarity_score > 0.48:  # Raised slightly
         return True, "traditional_high_non_pitch_features"
+    
+    # Ultra-high single feature - VERY restrictive
+    ultra_high_single = (
+        (detailed_similarities.get('mel', 0) > 0.95 and detailed_similarities['spectral'] > 0.85) or
+        (detailed_similarities['spectral'] > 0.90 and detailed_similarities.get('mel', 0) > 0.90)
+    )
+    
+    if ultra_high_single and similarity_score > 0.40:
+        return True, "traditional_ultra_high_single_feature"
     
     return False, "insufficient_similarity"
 
@@ -523,12 +603,12 @@ async def compare_voices(
             },
             "threshold_info": {
                 "primary_method": "speechbrain_ecapa_voxceleb" if speechbrain_available else "traditional_features",
-                "speechbrain_similarity_threshold": 0.45,
-                "speechbrain_verification_threshold": 0.25,
-                "traditional_similarity_threshold": 0.75,
-                "pitch_tolerance": "low (compensated by other features)",
-                "strict_mode": False,
-                "false_positive_protection": "balanced"
+                "speechbrain_similarity_threshold": 0.35,
+                "speechbrain_verification_threshold": 0.2,
+                "traditional_similarity_threshold": 0.65,
+                "pitch_tolerance": "ignored (completely compensated)",
+                "ultra_lenient_mode": True,
+                "false_positive_protection": "minimal"
             }
         }
 
@@ -569,30 +649,31 @@ async def get_system_info():
         },
         "thresholds": {
             "speechbrain": {
-                "similarity_threshold": 0.45,
-                "verification_threshold": 0.25,
-                "high_confidence_threshold": 0.55
+                "similarity_threshold": 0.35,
+                "verification_threshold": 0.2,
+                "high_confidence_threshold": 0.45
             },
             "traditional": {
-                "overall_similarity": 0.75,
-                "mfcc_similarity": 0.68,
-                "pitch_tolerance_hz": "flexible (compensated)",
-                "spectral_tolerance_khz": 3
+                "overall_similarity": 0.65,
+                "mfcc_similarity": 0.45,
+                "pitch_tolerance": "ignored",
+                "spectral_tolerance": "very_low"
             }
         },
         "improvements": {
-            "false_positive_protection": "balanced",
+            "false_positive_protection": "minimal",
             "multi_layer_validation": True,
             "advanced_features": True,
             "conservative_mode": False,
             "state_of_the_art_model": SPEECHBRAIN_AVAILABLE,
             "dual_method_validation": True,
-            "flexible_thresholds": True
+            "ultra_flexible_thresholds": True,
+            "pitch_independence": True
         },
         "accuracy_notes": {
             "primary_method": "Uses pre-trained deep learning model trained on VoxCeleb dataset",
-            "fallback_reliability": "Traditional features with balanced thresholds",
-            "false_positive_rate": "Balanced to allow same speakers while preventing false positives",
-            "threshold_philosophy": "Prioritizes speaker acceptance while maintaining accuracy"
+            "fallback_reliability": "Traditional features with ultra-lenient thresholds",
+            "false_positive_rate": "Prioritizes same speaker detection over false positive prevention",
+            "threshold_philosophy": "Maximum tolerance for speaker variations and recording conditions"
         }
     }

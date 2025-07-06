@@ -7,3 +7,9 @@ services:
     build: .
     env_file:
       - .env
+    networks:
+      - ai-hiring_default
+
+networks:
+  ai-hiring_default:
+    external: true
