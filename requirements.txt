@@ -9,6 +9,6 @@ python-multipart
 speechbrain
 torchaudio
 torch
-sklearn
+scikit-learn
 pyannote.audio
 transformers
