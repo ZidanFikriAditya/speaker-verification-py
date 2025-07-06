@@ -6,3 +6,9 @@ scipy
 pydub
 python-dotenv
 python-multipart
+speechbrain
+torchaudio
+torch
+sklearn
+pyannote.audio
+transformers
