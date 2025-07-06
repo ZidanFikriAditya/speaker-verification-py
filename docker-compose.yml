@@ -7,11 +7,5 @@ services:
     build: .
     env_file:
       - .env
-    networks:
-      - ai-hiring_default
     ports:
       - "5000:5000"
-
-networks:
-  ai-hiring_default:
-    external: true
