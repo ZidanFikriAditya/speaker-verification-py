@@ -157,13 +157,30 @@ def calculate_speechbrain_similarity(audio_path1, audio_path2):
         try:
             if hasattr(speaker_model, 'verify_files'):
                 verification_score = speaker_model.verify_files(audio_path1, audio_path2)
-                verification_prob = float(verification_score.item())
+                
+                # Handle verification score (could be tensor or scalar)
+                if hasattr(verification_score, 'item'):
+                    verification_prob = float(verification_score.item())
+                else:
+                    verification_prob = float(verification_score)
                 
                 # Extract embeddings untuk similarity calculation
                 embedding1 = speaker_model.encode_file(audio_path1)
                 embedding2 = speaker_model.encode_file(audio_path2)
-                similarity = torch.nn.functional.cosine_similarity(embedding1, embedding2)
-                similarity_score = float(similarity.item())
+                
+                # Handle embeddings safely
+                if len(embedding1.shape) == 3:
+                    embedding1 = embedding1.squeeze(1)
+                if len(embedding2.shape) == 3:
+                    embedding2 = embedding2.squeeze(1)
+                
+                # Calculate similarity safely
+                similarity = torch.nn.functional.cosine_similarity(embedding1, embedding2, dim=1)
+                
+                if similarity.numel() == 1:
+                    similarity_score = float(similarity.item())
+                else:
+                    similarity_score = float(similarity.mean().item())
                 
                 print(f"SpeechBrain (Method 1) - Similarity: {similarity_score}, Verification: {verification_prob}")
                 return similarity_score, verification_prob
@@ -205,9 +222,34 @@ def calculate_speechbrain_similarity(audio_path1, audio_path2):
         
         print(f"Embedding shapes: {embedding1.shape}, {embedding2.shape}")
         
+        # Reshape embeddings to 2D untuk cosine similarity
+        # SpeechBrain embeddings biasanya [batch, time, features] atau [batch, features]
+        if len(embedding1.shape) == 3:
+            # Jika shape [1, 1, 192], ambil [1, 192]
+            embedding1 = embedding1.squeeze(1)  # Remove time dimension
+            embedding2 = embedding2.squeeze(1)  # Remove time dimension
+        
+        print(f"Reshaped embedding shapes: {embedding1.shape}, {embedding2.shape}")
+        
         # Hitung cosine similarity antara embeddings
-        similarity = torch.nn.functional.cosine_similarity(embedding1, embedding2)
-        similarity_score = float(similarity.item())
+        # Pastikan dimension correct untuk cosine_similarity
+        if embedding1.dim() == 2 and embedding2.dim() == 2:
+            # Use dim=1 for feature dimension
+            similarity = torch.nn.functional.cosine_similarity(embedding1, embedding2, dim=1)
+        else:
+            # Fallback: flatten and calculate
+            embedding1_flat = embedding1.view(-1)
+            embedding2_flat = embedding2.view(-1)
+            similarity = torch.nn.functional.cosine_similarity(embedding1_flat.unsqueeze(0), embedding2_flat.unsqueeze(0))
+        
+        print(f"Similarity tensor shape: {similarity.shape}")
+        
+        # Extract scalar value safely
+        if similarity.numel() == 1:
+            similarity_score = float(similarity.item())
+        else:
+            # If multiple values, take mean
+            similarity_score = float(similarity.mean().item())
         
         # Convert similarity ke verification probability
         # SpeechBrain verification biasanya sigmoid-based
@@ -603,12 +645,12 @@ async def compare_voices(
             },
             "threshold_info": {
                 "primary_method": "speechbrain_ecapa_voxceleb" if speechbrain_available else "traditional_features",
-                "speechbrain_similarity_threshold": 0.35,
-                "speechbrain_verification_threshold": 0.2,
-                "traditional_similarity_threshold": 0.65,
+                "speechbrain_similarity_threshold": 0.55,  # Updated
+                "speechbrain_verification_threshold": 0.35,  # Updated  
+                "traditional_similarity_threshold": 0.72,  # Updated
                 "pitch_tolerance": "ignored (completely compensated)",
-                "ultra_lenient_mode": True,
-                "false_positive_protection": "minimal"
+                "balanced_mode": True,  # Updated
+                "false_positive_protection": "moderate"  # Updated
             }
         }
 
@@ -649,31 +691,31 @@ async def get_system_info():
         },
         "thresholds": {
             "speechbrain": {
-                "similarity_threshold": 0.35,
-                "verification_threshold": 0.2,
-                "high_confidence_threshold": 0.45
+                "similarity_threshold": 0.55,
+                "verification_threshold": 0.35,
+                "high_confidence_threshold": 0.65
             },
             "traditional": {
-                "overall_similarity": 0.65,
-                "mfcc_similarity": 0.45,
+                "overall_similarity": 0.72,
+                "mfcc_similarity": 0.65,
                 "pitch_tolerance": "ignored",
-                "spectral_tolerance": "very_low"
+                "spectral_tolerance": "moderate"
             }
         },
         "improvements": {
-            "false_positive_protection": "minimal",
+            "false_positive_protection": "balanced",
             "multi_layer_validation": True,
             "advanced_features": True,
             "conservative_mode": False,
             "state_of_the_art_model": SPEECHBRAIN_AVAILABLE,
             "dual_method_validation": True,
-            "ultra_flexible_thresholds": True,
+            "balanced_thresholds": True,
             "pitch_independence": True
         },
         "accuracy_notes": {
             "primary_method": "Uses pre-trained deep learning model trained on VoxCeleb dataset",
-            "fallback_reliability": "Traditional features with ultra-lenient thresholds",
-            "false_positive_rate": "Prioritizes same speaker detection over false positive prevention",
-            "threshold_philosophy": "Maximum tolerance for speaker variations and recording conditions"
+            "fallback_reliability": "Traditional features with balanced thresholds",
+            "false_positive_rate": "Balanced approach - prevents both false positives and false negatives",
+            "threshold_philosophy": "Balanced tolerance for speaker variations while maintaining accuracy"
         }
     }
